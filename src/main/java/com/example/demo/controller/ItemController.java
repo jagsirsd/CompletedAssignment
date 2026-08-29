@@ -1,51 +1,49 @@
 package com.example.demo.controller;
 
+import com.example.demo.dto.ItemDto;
+import com.example.demo.dto.PagedResult;
 import com.example.demo.entity.Item;
-import com.example.demo.kafka.ItemEventProducer;
-import com.example.demo.repository.ItemRepository;
+import com.example.demo.readmodel.ItemReadStore;
+import com.example.demo.service.ItemCommandService;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.List;
 
 @RestController
 @RequestMapping("/api/items")
 public class ItemController {
 
-    private final ItemRepository itemRepository;
-    private final ItemEventProducer eventProducer;
+    private final ItemReadStore itemReadStore;
+    private final ItemCommandService itemCommandService;
 
-    public ItemController(ItemRepository itemRepository, ItemEventProducer eventProducer) {
-        this.itemRepository = itemRepository;
-        this.eventProducer = eventProducer;
+    public ItemController(ItemReadStore itemReadStore, ItemCommandService itemCommandService) {
+        this.itemReadStore = itemReadStore;
+        this.itemCommandService = itemCommandService;
     }
 
     @GetMapping
-    public List<Item> getAll() {
-        return itemRepository.findAll();
+    public PagedResult<ItemDto> getAll(@PageableDefault(size = 20, sort = "id") Pageable pageable) {
+        return itemReadStore.findAll(pageable);
     }
 
     @PostMapping
     public Item create(@RequestBody Item item) {
-        Item saved = itemRepository.save(item);
-        eventProducer.publishCreated(saved.getId(), saved.getName());
-        return saved;
+        return itemCommandService.create(item);
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<Item> getById(@PathVariable Long id) {
-        return itemRepository.findById(id)
+    public ResponseEntity<ItemDto> getById(@PathVariable Long id) {
+        return itemReadStore.findById(id)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable Long id) {
-        if (!itemRepository.existsById(id)) {
+        if (!itemCommandService.delete(id)) {
             return ResponseEntity.notFound().build();
         }
-        itemRepository.deleteById(id);
-        eventProducer.publishDeleted(id);
         return ResponseEntity.noContent().build();
     }
 }

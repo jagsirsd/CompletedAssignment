@@ -1,13 +1,16 @@
 # demo
 
-Spring Boot 3.2 / Java 17 service that exposes a CRUD API for `Item` resources backed by
-PostgreSQL, and publishes create/delete events to Kafka.
+Spring Boot 3.2 / Java 17 service exposing a paginated, cached CRUD API for `Item`
+resources backed by PostgreSQL, with a CQRS-style read/write split driven by Kafka
+events. See [DECISIONS.md](DECISIONS.md) for why it's built this way and how to
+reconfigure the caching/CQRS strategy.
 
 ## Stack
 
-- Spring Boot 3.2 (Web, Data JPA, Actuator)
+- Spring Boot 3.2 (Web, Data JPA, Cache, Actuator)
 - PostgreSQL 15
-- Apache Kafka (via Confluent images) for event publishing
+- Redis 7 or Caffeine (in-process) for caching — configurable, see DECISIONS.md
+- Apache Kafka (via Confluent images) for event publishing and read-side refresh
 - Maven (wrapper included, no local Maven install required)
 
 ## Prerequisites
@@ -19,7 +22,7 @@ PostgreSQL, and publishes create/delete events to Kafka.
 
 ### Option A: Full stack via Docker Compose
 
-Builds the app image and starts it alongside Postgres, Zookeeper, and Kafka:
+Builds the app image and starts it alongside Postgres, Redis, Zookeeper, and Kafka:
 
 ```bash
 docker compose up --build
@@ -32,7 +35,7 @@ The API is then available at `http://localhost:8080`.
 Start only the infrastructure:
 
 ```bash
-docker compose up db zookeeper kafka
+docker compose up db redis zookeeper kafka
 ```
 
 Then run the app with the wrapper:
@@ -53,8 +56,8 @@ both local builds and CI. `verify` compiles the code and runs the test suite
 
 ## Configuration
 
-Configuration lives in `src/main/resources/application.properties`. Connection details
-default to local values and can be overridden via environment variables (used by
+Configuration lives in `src/main/resources/application.yml`. Connection details default
+to local values and can be overridden via environment variables (used by
 `docker-compose.yml`):
 
 | Property | Env var | Default |
@@ -63,6 +66,11 @@ default to local values and can be overridden via environment variables (used by
 | Datasource username | `SPRING_DATASOURCE_USERNAME` | `user` |
 | Datasource password | `SPRING_DATASOURCE_PASSWORD` | `password` |
 | Kafka bootstrap servers | `SPRING_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` |
+| Redis host/port | `SPRING_DATA_REDIS_HOST` / `_PORT` | `localhost` / `6379` |
+
+The caching backend and CQRS read-model depth are also configured here
+(`app.cache.type`, `app.cqrs.read-mode`) — see [DECISIONS.md](DECISIONS.md) for the full
+reference and the tradeoffs behind each option.
 
 Actuator health and info endpoints are exposed at `/actuator/health` and `/actuator/info`.
 
@@ -72,13 +80,16 @@ Base path: `/api/items`
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/items` | List all items |
-| `GET` | `/api/items/{id}` | Get an item by id, `404` if missing |
+| `GET` | `/api/items?page=0&size=20&sort=id,desc` | Paginated list (default size 20, max 100) |
+| `GET` | `/api/items/{id}` | Get an item by id, `404` if missing, served from cache when available |
 | `POST` | `/api/items` | Create an item, publishes a `CREATED` Kafka event |
 | `DELETE` | `/api/items/{id}` | Delete an item, `404` if missing, publishes a `DELETED` Kafka event |
 
 Item events are published to the `item-events` Kafka topic and consumed by
-`ItemEventConsumer` (with retry via `@RetryableTopic`).
+`ItemEventConsumer` (with retry via `@RetryableTopic`), which refreshes the read
+side (cache and/or materialized `items_read` table, depending on `app.cqrs.read-mode`)
+asynchronously — see [DECISIONS.md](DECISIONS.md) for the consistency tradeoff this
+implies.
 
 ## CI
 

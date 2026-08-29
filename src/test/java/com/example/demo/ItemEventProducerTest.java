@@ -1,6 +1,7 @@
 package com.example.demo;
 
 import com.example.demo.kafka.ItemEventProducer;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -31,7 +32,7 @@ class ItemEventProducerTest {
 
     @BeforeEach
     void setUp() {
-        producer = new ItemEventProducer(kafkaOperations);
+        producer = new ItemEventProducer(kafkaOperations, new ObjectMapper());
 
         ProducerRecord<String, String> record = new ProducerRecord<>("item-events", "1", "{}");
         RecordMetadata meta = new RecordMetadata(new TopicPartition("item-events", 0), 0, 0, 0, 0, 0);
@@ -42,7 +43,7 @@ class ItemEventProducerTest {
 
     @Test
     void publishCreated_sendsCorrectPayload() {
-        producer.publishCreated(42L, "Widget");
+        producer.publishCreated(42L, "Widget", "A small widget");
 
         ArgumentCaptor<String> messageCaptor = ArgumentCaptor.forClass(String.class);
         verify(kafkaOperations).send(eq("item-events"), eq("42"), messageCaptor.capture());
@@ -51,6 +52,7 @@ class ItemEventProducerTest {
         assertThat(message).contains("\"event\":\"CREATED\"");
         assertThat(message).contains("\"id\":42");
         assertThat(message).contains("\"name\":\"Widget\"");
+        assertThat(message).contains("\"description\":\"A small widget\"");
     }
 
     @Test
