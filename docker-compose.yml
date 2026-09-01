@@ -7,51 +7,46 @@ services:
       - "8080:8080"
       - "9090:9090"
     depends_on:
-      db:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
+      scylla-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
-      kafka-connect:
-        condition: service_healthy
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/mydb
-      SPRING_DATASOURCE_USERNAME: user
-      SPRING_DATASOURCE_PASSWORD: password
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPRING_CASSANDRA_CONTACT_POINTS: scylla
+      SPRING_CASSANDRA_PORT: 9042
+      SPRING_CASSANDRA_LOCAL_DATACENTER: datacenter1
+      SPRING_CASSANDRA_KEYSPACE_NAME: demo
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
-      APP_DEBEZIUM_KAFKACONNECTURL: http://kafka-connect:8083
-      APP_DEBEZIUM_TOPIC: mydb.public.items
     restart: on-failure
 
-  db:
-    image: postgres:15
-    # wal_level=logical is required for Debezium CDC via pgoutput plugin.
-    # synchronous_commit=off: COMMIT returns without waiting for the WAL fsync —
-    # the wal writer flushes asynchronously (~wal_writer_delay, default 200ms) instead.
-    # Tradeoff: a crash can lose the last ~200ms-1s of "committed" transactions
-    # (never corruption, just a shorter durability window); worth it here for
-    # write throughput under this workload's high insert volume.
-    command: ["postgres",
-      "-c", "wal_level=logical",
-      "-c", "max_wal_senders=10",
-      "-c", "max_replication_slots=10",
-      "-c", "synchronous_commit=off"]
-    environment:
-      POSTGRES_DB: mydb
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
+  # ScyllaDB: single-node dev config (--smp/--memory/--overprovisioned keep it light
+  # enough to run alongside everything else on a dev machine; drop them for anything
+  # resembling a real workload).
+  scylla:
+    image: scylladb/scylla:5.4
+    command: ["--smp", "1", "--memory", "750M", "--overprovisioned", "1", "--api-address", "0.0.0.0"]
     ports:
-      - "5432:5432"
+      - "9042:9042"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - scylla_data:/var/lib/scylla
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d mydb"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD-SHELL", "cqlsh -e 'SELECT now() FROM system.local' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  # One-shot: creates the keyspace/table before `app` starts. Spring Boot's Cassandra
+  # auto-configuration builds its session with a fixed keyspace at startup and doesn't
+  # create keyspaces itself (unlike JPA's ddl-auto), so the keyspace must already exist.
+  scylla-init:
+    image: scylladb/scylla:5.4
+    depends_on:
+      scylla:
+        condition: service_healthy
+    entrypoint: ["cqlsh", "scylla", "-e",
+      "CREATE KEYSPACE IF NOT EXISTS demo WITH replication = {'class':'SimpleStrategy','replication_factor':1}; CREATE TABLE IF NOT EXISTS demo.items (id bigint PRIMARY KEY, name text, description text);"]
 
   redis:
     image: redis:7-alpine
@@ -62,52 +57,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  # KRaft mode — no ZooKeeper required (Kafka 3.7 built-in consensus)
-  kafka:
-    image: apache/kafka:3.7.0
-    hostname: kafka
-    ports:
-      - "9092:9092"
-      - "29092:29092"
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
-    healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-
-  # Builds from apache/kafka:3.7.0 + Debezium PostgreSQL connector downloaded from Maven Central
-  kafka-connect:
-    build: docker/kafka-connect
-    hostname: kafka-connect
-    depends_on:
-      kafka:
-        condition: service_healthy
-      db:
-        condition: service_healthy
-    ports:
-      - "8083:8083"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/connectors || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 30s
 
   prometheus:
     image: prom/prometheus:v2.51.0
@@ -140,5 +89,5 @@ services:
       - prometheus
 
 volumes:
-  postgres_data:
+  scylla_data:
   grafana_data:

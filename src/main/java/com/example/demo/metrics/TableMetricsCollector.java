@@ -1,12 +1,13 @@
 package com.example.demo.metrics;
 
+import com.datastax.oss.driver.api.core.CqlSession;
+import com.datastax.oss.driver.api.core.cql.Row;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -15,9 +16,9 @@ import java.util.concurrent.atomic.AtomicLong;
 @Component
 public class TableMetricsCollector {
 
-    private final JdbcTemplate               jdbcTemplate;
-    private final RedisTemplate<String, String> redisTemplate;
-    private final MeterRegistry              meterRegistry;
+    private final CqlSession                     cqlSession;
+    private final RedisTemplate<String, String>  redisTemplate;
+    private final MeterRegistry                  meterRegistry;
 
     private final AtomicLong dbRowCount    = new AtomicLong(0);
     private final AtomicLong redisKeyCount = new AtomicLong(0);
@@ -25,10 +26,13 @@ public class TableMetricsCollector {
     @Value("${app.metrics.collection-interval-ms:5000}")
     private long collectionIntervalMs;
 
-    public TableMetricsCollector(JdbcTemplate jdbcTemplate,
+    @Value("${spring.data.cassandra.keyspace-name:demo}")
+    private String keyspaceName;
+
+    public TableMetricsCollector(CqlSession cqlSession,
                                  RedisTemplate<String, String> redisTemplate,
                                  MeterRegistry meterRegistry) {
-        this.jdbcTemplate  = jdbcTemplate;
+        this.cqlSession   = cqlSession;
         this.redisTemplate = redisTemplate;
         this.meterRegistry = meterRegistry;
     }
@@ -36,7 +40,7 @@ public class TableMetricsCollector {
     @PostConstruct
     public void registerGauges() {
         Gauge.builder("db.table.rows", dbRowCount, AtomicLong::doubleValue)
-                .description("Approximate row count of the items table (pg_stat_user_tables)")
+                .description("Approximate row count of the items table (system.size_estimates)")
                 .tag("table", "items")
                 .register(meterRegistry);
 
@@ -48,10 +52,17 @@ public class TableMetricsCollector {
     @Scheduled(fixedDelayString = "${app.metrics.collection-interval-ms:5000}")
     public void collect() {
         try {
-            Long rows = jdbcTemplate.queryForObject(
-                    "SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'items'",
-                    Long.class);
-            if (rows != null) dbRowCount.set(rows);
+            // Cassandra/Scylla equivalent of Postgres's pg_stat_user_tables.n_live_tup —
+            // a fast, approximate estimate from system metadata rather than a full scan.
+            // partitions_count sums to an approximate row count since id (the sole primary
+            // key column) is the partition key: one row per partition in this schema.
+            long total = 0;
+            for (Row row : cqlSession.execute(
+                    "SELECT partitions_count FROM system.size_estimates "
+                            + "WHERE keyspace_name = '" + keyspaceName + "' AND table_name = 'items'")) {
+                total += row.getLong("partitions_count");
+            }
+            dbRowCount.set(total);
         } catch (Exception ignored) {}
 
         try {

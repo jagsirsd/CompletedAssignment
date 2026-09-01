@@ -40,9 +40,43 @@ rather than being handicapped by plain HTTP/1.1. This is what makes a fair laten
 comparison between the two possible — see "Load testing" below.
 
 `db.write.duration` (the only stage where transport can matter — everything downstream,
-CDC/Kafka/Redis, doesn't know or care which API a row came through) carries a `transport`
-tag (`grpc`/`rest`) precisely so that comparison can be made directly in Grafana instead of
-by eyeballing separate time windows.
+the Scylla write and Redis update, doesn't know or care which API a row came through)
+carries a `transport` tag (`grpc`/`rest`) precisely so that comparison can be made directly
+in Grafana instead of by eyeballing separate time windows.
+
+## Datastore: ScyllaDB, not PostgreSQL — and no CDC
+
+This branch replaces PostgreSQL with ScyllaDB (`entity/Item.java` now Cassandra-mapped,
+`repository/ItemRepository.java` a `CassandraRepository`) as one of three parallel
+experiments into lower write-path latency (the other two, on separate branches, keep
+Postgres and instead add a synchronous or buffered fast-path write into Redis — see their
+own DECISIONS.md for that writeup).
+
+**The gap, stated plainly**: this branch has no change-data-capture pipeline at all. The
+other branches' CDC path (Postgres WAL → Debezium → Kafka → consumer → Redis) has no
+equivalent here — Scylla does have its own native CDC feature, but integrating it means a
+completely different Kafka Connect plugin (`scylla-cdc-source-connector`) and a rewritten
+event/envelope parser, not a drop-in swap of `CdcEventConsumer`. That was out of scope to
+build and validate properly in this pass, so it wasn't attempted or faked. The practical
+consequence: `ItemCommandService`'s synchronous write into the Redis read model
+(`fastpath.cache.write.duration`) is not a latency optimization *alongside* a durable
+reconciliation path here — it is the **only** thing populating the read model. If that
+write fails, or if Redis is ever flushed, there is currently nothing that will replay
+Scylla's data back into it. A real Scylla-backed version of this service would need that
+CDC integration built before being trusted the way the Postgres branches can be.
+
+**Why ScyllaDB is still a legitimate answer to "lower write latency"**: unlike the
+Postgres branches (single-writer, WAL-bound), Scylla is built for high-throughput,
+low-latency writes at scale (shard-per-core architecture, tunable consistency, no
+CDC-pipeline hop required for the write itself to complete). Every write still needs an
+app-generated id (`service/SnowflakeIdGenerator.java`) since Cassandra/Scylla has no
+auto-increment concept — the datastore doesn't generate keys, ever, for any write.
+
+**Ids and app generation**: because there's no CDC path deriving the read model from a
+separate source of truth, `id` has no natural "the database decides eventually" story here
+either. This is a smaller, self-contained instance of the same problem the write-behind
+branch solves for a different reason (there, the id must exist *before* the DB write
+happens; here, it must exist because the DB never generates one at all).
 
 ## Pagination
 
@@ -71,30 +105,21 @@ a Hibernate-proxied `Item` doesn't serialize/deserialize reliably.
 
 ## CQRS
 
-Writes and reads go through separate components:
+Writes and reads go through separate components, though on this branch "separate" means
+something narrower than on the Postgres branches:
 
-- **Command** (`service/ItemCommandService.java`) — `create`/`delete` write to the
-  `items` table (source of truth) and publish a `CREATED`/`DELETED` event to the
-  `item-events` Kafka topic (`kafka/ItemEventProducer.java`). It never touches a cache
-  or read model directly, so write latency doesn't depend on how much read
-  infrastructure exists behind it.
-- **Query** (`readmodel/ItemReadStore.java`) — serves all `GET` traffic. `kafka/ItemEventConsumer.java`
-  (which previously just logged) now parses each event and calls
-  `onItemCreated`/`onItemDeleted` on the read store, refreshing it **asynchronously**,
-  off the request path entirely.
+- **Command** (`service/ItemCommandService.java`) — `create`/`delete` write to ScyllaDB
+  (source of truth), then synchronously push the same change into Redis directly (see
+  "Datastore: ScyllaDB" above for why this is the *only* read-model update mechanism here).
+- **Query** (`readmodel/ItemReadStore.java` / `RedisCacheItemReadStore.java`) — serves all
+  reads from Redis.
 
-`app.cqrs.read-mode` picks how deep that separation goes:
-
-| `app.cqrs.read-mode` | Implementation | What it reads from |
-|---|---|---|
-| `cache` (default) | `readmodel/CacheBackedItemReadStore.java` | The same `items` table the write path uses, fronted by the cache above (refreshed by events, not invalidated synchronously on write). |
-| `materialized-table` | `readmodel/MaterializedItemReadStore.java` | A separate `items_read` table (`readmodel/ItemReadModel.java`), populated only by the Kafka consumer — never written to directly by the command path. Still cached in front (the two settings compose). Closer to physically separate read/write stores; more moving parts (extra table, consumer does a DB write per event) in exchange for a read path that could later move to its own datastore without touching the write path at all. |
-
-**Consistency tradeoff**: because the read side refreshes from Kafka asynchronously,
-there's a brief window after a write where a read can still return the old state (e.g. a
-just-deleted item still appearing in a cached list page) until the consumer processes the
-event. This is deliberate — it's what keeps writes fast — and is standard for CQRS. It is
-not appropriate for use cases needing strict read-your-writes consistency.
+**Consistency**: unlike the Postgres/CDC branches, there is no asynchronous refresh window
+here — the Redis write happens synchronously, in the same request, before the client gets
+a response. That's stronger read-your-writes consistency than CDC-based CQRS gives you,
+but it comes at the cost described above: no durable, replayable path back to the read
+model if that synchronous write is ever lost. This is a different point on the
+consistency/resilience tradeoff curve than the other two branches, not simply "better."
 
 ## Configuration reference
 
@@ -103,10 +128,8 @@ by `docker-compose.yml`):
 
 | Property | Values | Default | Purpose |
 |---|---|---|---|
-| `app.cache.type` (`APP_CACHE_TYPE`) | `redis`, `caffeine` | `redis` | Cache backend, see above. |
-| `app.cache.items-ttl-seconds` | integer | `300` | Cache entry TTL, both backends. |
-| `app.cqrs.read-mode` (`APP_CQRS_READMODE`) | `cache`, `materialized-table` | `cache` | Read-model depth, see above. |
-| `spring.data.redis.host`/`.port` (`SPRING_DATA_REDIS_HOST`/`PORT`) | host/port | `localhost`/`6379` | Only used when `app.cache.type=redis`. |
-
-Spring's relaxed environment-variable binding drops hyphens, so `read-mode` becomes
-`READMODE` in the env var name, not `READ-MODE`.
+| `app.cache.items-ttl-seconds` | integer | `300` | Redis entry TTL. |
+| `spring.cassandra.contact-points`/`.port` (`SPRING_CASSANDRA_CONTACT_POINTS`/`PORT`) | host/port | `localhost`/`9042` | Scylla connection. |
+| `spring.cassandra.local-datacenter` (`SPRING_CASSANDRA_LOCAL_DATACENTER`) | string | `datacenter1` | Required by the Cassandra driver even for a single-node dev cluster. |
+| `spring.cassandra.keyspace-name` (`SPRING_CASSANDRA_KEYSPACE_NAME`) | string | `demo` | Must already exist — see `scylla-init` in docker-compose.yml. |
+| `spring.data.redis.host`/`.port` (`SPRING_DATA_REDIS_HOST`/`PORT`) | host/port | `localhost`/`6379` | Redis connection. |

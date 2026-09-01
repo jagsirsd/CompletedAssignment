@@ -1,16 +1,18 @@
-# demo
+# demo (ScyllaDB variant)
 
 Spring Boot 3.2 / Java 17 service exposing a paginated, cached CRUD API for `Item`
-resources backed by PostgreSQL, with a CQRS-style read/write split driven by Kafka
-events. See [DECISIONS.md](DECISIONS.md) for why it's built this way and how to
-reconfigure the caching/CQRS strategy.
+resources, backed by **ScyllaDB** instead of PostgreSQL. This branch swaps the datastore
+underneath the same REST/gRPC transport layer used elsewhere in this repo's history — see
+[DECISIONS.md](DECISIONS.md) for why, and for an important gap: **there is no CDC pipeline
+on this branch** (Scylla's native CDC is a different integration than Debezium/Postgres
+entirely, out of scope for this pass). The Redis read model is populated by a direct,
+synchronous write from the command path — not eventually-consistent CDC replay.
 
 ## Stack
 
-- Spring Boot 3.2 (Web, Data JPA, Cache, Actuator)
-- PostgreSQL 15
-- Redis 7 or Caffeine (in-process) for caching — configurable, see DECISIONS.md
-- Apache Kafka (via Confluent images) for event publishing and read-side refresh
+- Spring Boot 3.2 (Web, Data Cassandra, Cache, Actuator)
+- ScyllaDB (single-node dev config) via Spring Data Cassandra (CQL-wire-compatible)
+- Redis 7 for the read-model cache
 - Maven (wrapper included, no local Maven install required)
 
 ## Prerequisites
@@ -22,7 +24,9 @@ reconfigure the caching/CQRS strategy.
 
 ### Option A: Full stack via Docker Compose
 
-Builds the app image and starts it alongside Postgres, Redis, Zookeeper, and Kafka:
+Builds the app image and starts it alongside Scylla and Redis. `scylla-init` creates the
+keyspace/table once Scylla is healthy, before `app` starts (Spring Boot's Cassandra
+auto-configuration doesn't create keyspaces itself):
 
 ```bash
 docker compose up --build
@@ -36,7 +40,7 @@ The gRPC API is then available at `localhost:9090`; the REST API and Actuator
 Start only the infrastructure:
 
 ```bash
-docker compose up db redis zookeeper kafka
+docker compose up scylla-init redis
 ```
 
 Then run the app with the wrapper:
@@ -63,15 +67,11 @@ to local values and can be overridden via environment variables (used by
 
 | Property | Env var | Default |
 |---|---|---|
-| Datasource URL | `SPRING_DATASOURCE_URL` | `jdbc:postgresql://localhost:5432/mydb` |
-| Datasource username | `SPRING_DATASOURCE_USERNAME` | `user` |
-| Datasource password | `SPRING_DATASOURCE_PASSWORD` | `password` |
-| Kafka bootstrap servers | `SPRING_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` |
+| Cassandra/Scylla contact points | `SPRING_CASSANDRA_CONTACT_POINTS` | `localhost` |
+| Cassandra/Scylla port | `SPRING_CASSANDRA_PORT` | `9042` |
+| Local datacenter | `SPRING_CASSANDRA_LOCAL_DATACENTER` | `datacenter1` |
+| Keyspace | `SPRING_CASSANDRA_KEYSPACE_NAME` | `demo` |
 | Redis host/port | `SPRING_DATA_REDIS_HOST` / `_PORT` | `localhost` / `6379` |
-
-The caching backend and CQRS read-model depth are also configured here
-(`app.cache.type`, `app.cqrs.read-mode`) — see [DECISIONS.md](DECISIONS.md) for the full
-reference and the tradeoffs behind each option.
 
 Actuator health and info endpoints are exposed at `/actuator/health` and `/actuator/info`.
 
@@ -113,11 +113,10 @@ matching gRPC's transport characteristics rather than plain HTTP/1.1 keep-alive.
 | `POST` | `/api/items` | Create an item |
 | `DELETE` | `/api/items/{id}` | Delete an item, `404` if missing |
 
-Writes from either API land in PostgreSQL and are captured off its WAL by Debezium (Kafka
-Connect), published to the `mydb.public.items` Kafka topic, and consumed by
-`cdc/CdcEventConsumer.java`, which refreshes the Redis-backed read side
-(`readmodel/RedisCacheItemReadStore.java`) asynchronously — see
-[DECISIONS.md](DECISIONS.md) for the consistency tradeoff this implies.
+Writes from either API land in ScyllaDB, then `ItemCommandService` synchronously pushes
+the same change into the Redis read side (`readmodel/RedisCacheItemReadStore.java`)
+directly — there is no CDC pipeline on this branch. See [DECISIONS.md](DECISIONS.md) for
+what that means and why.
 
 ### Load testing
 
@@ -130,6 +129,9 @@ Comparison" row.
 
 ## CI
 
-`.github/workflows/build.yml` runs `./mvnw -s maven-settings.xml -B verify` with JDK 17 on
-every push and pull request to `master`, and uploads Surefire test reports as a build
-artifact.
+**Known gap on this branch**: `.github/workflows/build.yml`'s `e2e` job still references
+`db`/`kafka`/`kafka-connect` — services this branch's `docker-compose.yml` no longer
+defines — and its verification steps assume the Postgres/Debezium CDC pipeline. It will
+fail as written. Not rewritten in this pass since it wasn't the priority (getting a working,
+benchmarkable Scylla-backed system was); flagging it here rather than leaving it silently
+broken. The `build` job (`./mvnw -s maven-settings.xml -B verify`) is unaffected.
