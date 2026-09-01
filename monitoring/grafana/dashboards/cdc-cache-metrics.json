@@ -540,6 +540,121 @@
       ],
       "title": "Write Throughput: REST vs gRPC (req/s)",
       "type": "timeseries"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 58 },
+      "id": 105,
+      "title": "Data-Push Latency: CDC Path vs Write-Behind",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Time from DB commit to fully visible-in-Redis. cdc.total.lag.duration = via CDC/Kafka only. item.command.total.duration = the write-behind path as seen by the caller (enqueue + direct Redis write; excludes the async batch flush to Postgres, which happens later and isn't on the client's critical path at all).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "scaleDistribution": { "type": "log", "log": 10 } },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 59 },
+      "id": 15,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(cdc_total_lag_duration_seconds_bucket{operation=\"create\"}[1m])) by (le))",
+          "legendFormat": "CDC path p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(cdc_total_lag_duration_seconds_bucket{operation=\"create\"}[1m])) by (le))",
+          "legendFormat": "CDC path p95",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(item_command_total_duration_seconds_bucket{operation=\"create\"}[1m])) by (le))",
+          "legendFormat": "Write-behind path p50",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(item_command_total_duration_seconds_bucket{operation=\"create\"}[1m])) by (le))",
+          "legendFormat": "Write-behind path p95",
+          "refId": "D"
+        }
+      ],
+      "title": "Time to Visible-in-Redis: CDC Path vs Write-Behind (log scale)",
+      "type": "timeseries"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "How many rows the scheduled flush (every 25ms) is coalescing per batched INSERT, and how long that INSERT takes — the throughput lever this strategy relies on.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 68 },
+      "id": 16,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(writebehind_batch_size_bucket[1m])) by (le))",
+          "legendFormat": "Batch size p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(writebehind_batch_size_bucket[1m])) by (le))",
+          "legendFormat": "Batch size p95",
+          "refId": "B"
+        }
+      ],
+      "title": "Write-Behind Batch Size",
+      "type": "timeseries"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 68 },
+      "id": 17,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(writebehind_batch_flush_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "Flush p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(writebehind_batch_flush_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "Flush p95",
+          "refId": "B"
+        }
+      ],
+      "title": "Write-Behind Batch Flush Duration",
+      "type": "timeseries"
     }
   ]
 }
