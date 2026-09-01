@@ -340,6 +340,122 @@
       ],
       "title": "CDC Event Throughput by Operation",
       "type": "timeseries"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "id": 103,
+      "title": "End-to-End Pipeline Latency (request → DB → Kafka → Redis)",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Time spent in each stage of the pipeline, log-scaled since stages differ by orders of magnitude (sub-ms DB/Redis writes vs. potentially minutes-to-hours of Kafka/Debezium backlog).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "scaleDistribution": { "type": "log", "log": 10 } },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 32 },
+      "id": 10,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(db_write_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "1. App request → DB write",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(cdc_capture_lag_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "2. DB commit → Kafka publish (Debezium)",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(cdc_consume_lag_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "3. Kafka publish → consumer pickup",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(cache_write_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "4. Redis ingest",
+          "refId": "D"
+        }
+      ],
+      "title": "Pipeline Latency by Stage (p95, log scale)",
+      "type": "timeseries"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "The two CDC-specific stages compared directly (linear scale) — shows whether backlog pressure sits on the Debezium capture side or the Kafka consumer side.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 20, "stacking": { "mode": "normal" } },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
+      "id": 11,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(cdc_capture_lag_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "DB commit → Kafka publish (p50)",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(cdc_consume_lag_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "Kafka publish → consumer pickup (p50)",
+          "refId": "B"
+        }
+      ],
+      "title": "CDC Pipeline Lag Breakdown (stacked, p50)",
+      "type": "timeseries"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 41 },
+      "id": 12,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(db_write_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "App → DB write (p95)",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(cache_write_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "Redis ingest (p95)",
+          "refId": "B"
+        }
+      ],
+      "title": "Fast-Path Stage Latency: App→DB vs Redis Ingest (p95)",
+      "description": "The two sub-millisecond stages compared on their own linear scale, without the Kafka/Debezium stages dwarfing them.",
+      "type": "timeseries"
     }
   ]
 }

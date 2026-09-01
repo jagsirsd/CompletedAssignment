@@ -55,6 +55,8 @@ management:
         cache.read.duration: true
         cache.write.duration: true
         cdc.event.processing.duration: true
+        cdc.capture.lag.duration: true
+        cdc.consume.lag.duration: true
       slo:
         db.write.duration: 1ms,5ms,10ms,25ms,50ms,100ms,250ms,500ms,1s
         cache.read.duration: 100us,500us,1ms,5ms,10ms,25ms

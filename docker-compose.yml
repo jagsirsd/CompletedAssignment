@@ -28,11 +28,17 @@ services:
 
   db:
     image: postgres:15
-    # wal_level=logical is required for Debezium CDC via pgoutput plugin
+    # wal_level=logical is required for Debezium CDC via pgoutput plugin.
+    # synchronous_commit=off: COMMIT returns without waiting for the WAL fsync —
+    # the wal writer flushes asynchronously (~wal_writer_delay, default 200ms) instead.
+    # Tradeoff: a crash can lose the last ~200ms-1s of "committed" transactions
+    # (never corruption, just a shorter durability window); worth it here for
+    # write throughput under this workload's high insert volume.
     command: ["postgres",
       "-c", "wal_level=logical",
       "-c", "max_wal_senders=10",
-      "-c", "max_replication_slots=10"]
+      "-c", "max_replication_slots=10",
+      "-c", "synchronous_commit=off"]
     environment:
       POSTGRES_DB: mydb
       POSTGRES_USER: user
