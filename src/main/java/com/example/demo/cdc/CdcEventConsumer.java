@@ -58,6 +58,26 @@ public class CdcEventConsumer {
                     .description("Local time to process a CDC event into Redis")
                     .tag("operation", opLabel)
                     .register(meterRegistry));
+            recordTotalLag(event, opLabel);
+        }
+    }
+
+    /**
+     * DB commit to fully visible-in-Redis, via the CDC path end to end — the number to
+     * compare directly against the fast path's {@code item.command.total.duration}.
+     */
+    private void recordTotalLag(CdcEvent event, String opLabel) {
+        Long sourceTsMs = event.source() != null ? event.source().tsMs() : null;
+        if (sourceTsMs == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now >= sourceTsMs) {
+            Timer.builder("cdc.total.lag.duration")
+                    .description("DB commit to visible-in-Redis via CDC, end to end")
+                    .tag("operation", opLabel)
+                    .register(meterRegistry)
+                    .record(Duration.ofMillis(now - sourceTsMs));
         }
     }
 
