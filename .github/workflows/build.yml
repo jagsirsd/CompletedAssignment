@@ -171,6 +171,13 @@ jobs:
             fi
           done
 
+      # grpcurl drives the gRPC item API in the verification steps below (no .proto
+      # file needed — the server has reflection enabled).
+      - name: Install grpcurl
+        run: |
+          curl -sSfL https://github.com/fullstorydev/grpcurl/releases/download/v1.9.3/grpcurl_1.9.3_linux_x86_64.tar.gz \
+            | sudo tar xz -C /usr/local/bin grpcurl
+
       # DebeziumConnectorRegistrar registers the connector on ApplicationReadyEvent.
       # This step polls until the connector reports RUNNING state.
       - name: Wait for Debezium connector RUNNING
@@ -187,10 +194,9 @@ jobs:
       # --- Verification 1: create item → CDC event → Redis cache ---
       - name: Verify create — CDC event populates Redis
         run: |
-          RESPONSE=$(curl -sf -X POST http://localhost:8080/api/items \
-            -H "Content-Type: application/json" \
-            -d '{"name":"ci-widget","description":"cdc integration test"}')
-          echo "API response: $RESPONSE"
+          RESPONSE=$(grpcurl -plaintext -d '{"name":"ci-widget","description":"cdc integration test"}' \
+            localhost:9090 item.v1.ItemService/CreateItem)
+          echo "gRPC response: $RESPONSE"
           ITEM_ID=$(echo "$RESPONSE" | jq -r '.id')
           echo "ITEM_ID=$ITEM_ID" >> "$GITHUB_ENV"
 
@@ -205,21 +211,21 @@ jobs:
           fi
           echo "PASS: item cached in Redis"
 
-      # --- Verification 2: GET /api/items/{id} returns from Redis ---
-      - name: Verify read — GET API returns cached item
+      # --- Verification 2: GetItem returns from Redis ---
+      - name: Verify read — GetItem returns cached item
         run: |
-          RESPONSE=$(curl -sf "http://localhost:8080/api/items/$ITEM_ID")
-          echo "GET /api/items/$ITEM_ID = $RESPONSE"
+          RESPONSE=$(grpcurl -plaintext -d "{\"id\":$ITEM_ID}" localhost:9090 item.v1.ItemService/GetItem)
+          echo "GetItem($ITEM_ID) = $RESPONSE"
           if [ -z "$RESPONSE" ]; then
-            echo "FAIL: API returned empty response"
+            echo "FAIL: GetItem returned empty response"
             exit 1
           fi
-          echo "PASS: GET returned data"
+          echo "PASS: GetItem returned data"
 
       # --- Verification 3: delete item → CDC event → Redis eviction ---
       - name: Verify delete — CDC event evicts from Redis
         run: |
-          curl -sf -X DELETE "http://localhost:8080/api/items/$ITEM_ID"
+          grpcurl -plaintext -d "{\"id\":$ITEM_ID}" localhost:9090 item.v1.ItemService/DeleteItem
           sleep 2
 
           CACHED=$(docker compose exec -T redis redis-cli GET "item:$ITEM_ID")
@@ -229,6 +235,43 @@ jobs:
             exit 1
           fi
           echo "PASS: item evicted from Redis"
+
+      # --- Verification: REST API (dual-protocol alongside gRPC) create -> read -> delete ---
+      - name: Verify REST API — create, read, delete
+        run: |
+          RESPONSE=$(curl -sf -X POST http://localhost:8080/api/items \
+            -H "Content-Type: application/json" \
+            -d '{"name":"ci-rest-widget","description":"rest api integration test"}')
+          echo "REST response: $RESPONSE"
+          REST_ITEM_ID=$(echo "$RESPONSE" | jq -r '.id')
+
+          echo "Waiting 3s for CDC event to reach Redis..."
+          sleep 3
+
+          CACHED=$(docker compose exec -T redis redis-cli GET "item:$REST_ITEM_ID")
+          if [ -z "$CACHED" ]; then
+            echo "FAIL: REST-created item not found in Redis after create"
+            exit 1
+          fi
+          echo "PASS: REST-created item cached in Redis"
+
+          RESPONSE=$(curl -sf "http://localhost:8080/api/items/$REST_ITEM_ID")
+          echo "GET /api/items/$REST_ITEM_ID = $RESPONSE"
+          if [ -z "$RESPONSE" ]; then
+            echo "FAIL: REST GET returned empty response"
+            exit 1
+          fi
+          echo "PASS: REST GET returned data"
+
+          curl -sf -X DELETE "http://localhost:8080/api/items/$REST_ITEM_ID"
+          sleep 2
+
+          CACHED=$(docker compose exec -T redis redis-cli GET "item:$REST_ITEM_ID")
+          if [ -n "$CACHED" ]; then
+            echo "FAIL: REST-deleted item still present in Redis after delete"
+            exit 1
+          fi
+          echo "PASS: REST-deleted item evicted from Redis"
 
       # --- Verification 4: direct SQL insert captured by CDC (no app involved) ---
       - name: Verify external change — SQL insert captured by CDC

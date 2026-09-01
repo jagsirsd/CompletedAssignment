@@ -10,6 +10,8 @@ import org.springframework.kafka.annotation.RetryableTopic;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+
 @Component
 public class CdcEventConsumer {
 
@@ -29,6 +31,7 @@ public class CdcEventConsumer {
     @KafkaListener(topics = "${app.debezium.topic:mydb.public.items}",
                    groupId = "cdc-consumer-group")
     public void consume(String message) throws JsonProcessingException {
+        long consumedAtMs = System.currentTimeMillis();
         CdcEvent event = objectMapper.readValue(message, CdcEvent.class);
 
         String opLabel = event.isCreate()   ? "create"
@@ -36,6 +39,8 @@ public class CdcEventConsumer {
                        : event.isDelete()   ? "delete"
                        : event.isSnapshot() ? "snapshot"
                        : "unknown";
+
+        recordPipelineLag(event, opLabel, consumedAtMs);
 
         Timer.Sample sample = Timer.start(meterRegistry);
         try {
@@ -50,9 +55,37 @@ public class CdcEventConsumer {
             }
         } finally {
             sample.stop(Timer.builder("cdc.event.processing.duration")
-                    .description("End-to-end time to process a CDC event into Redis")
+                    .description("Local time to process a CDC event into Redis")
                     .tag("operation", opLabel)
                     .register(meterRegistry));
+        }
+    }
+
+    /**
+     * Debezium's envelope carries two timestamps: {@code source.ts_ms} (the Postgres WAL
+     * commit time) and the top-level {@code ts_ms} (when Debezium produced the record to
+     * Kafka). Splitting on those lets us attribute pipeline latency to the two stages this
+     * consumer can't otherwise see into: DB commit -> Kafka publish (Debezium's own capture
+     * latency), and Kafka publish -> this consumer picking the message up (delivery time,
+     * dominated by consumer backlog when one exists).
+     */
+    private void recordPipelineLag(CdcEvent event, String opLabel, long consumedAtMs) {
+        Long sourceTsMs = event.source() != null ? event.source().tsMs() : null;
+        Long publishedTsMs = event.tsMs();
+
+        if (sourceTsMs != null && publishedTsMs != null && publishedTsMs >= sourceTsMs) {
+            Timer.builder("cdc.capture.lag.duration")
+                    .description("DB commit to Kafka publish (Debezium capture latency)")
+                    .tag("operation", opLabel)
+                    .register(meterRegistry)
+                    .record(Duration.ofMillis(publishedTsMs - sourceTsMs));
+        }
+        if (publishedTsMs != null && consumedAtMs >= publishedTsMs) {
+            Timer.builder("cdc.consume.lag.duration")
+                    .description("Kafka publish to consumer pickup (delivery + backlog wait)")
+                    .tag("operation", opLabel)
+                    .register(meterRegistry)
+                    .record(Duration.ofMillis(consumedAtMs - publishedTsMs));
         }
     }
 }

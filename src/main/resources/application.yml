@@ -30,6 +30,21 @@ spring:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
 
+server:
+  tomcat:
+    threads:
+      max: ${SERVER_TOMCAT_THREADS_MAX:400}
+      min-spare: 20
+    accept-count: 200
+    max-connections: 10000
+    keep-alive-timeout: 60000
+    max-keep-alive-requests: -1
+
+grpc:
+  server:
+    port: ${GRPC_SERVER_PORT:9090}
+    reflection-service-enabled: true
+
 management:
   endpoints:
     web:
@@ -50,6 +65,8 @@ management:
         cache.read.duration: true
         cache.write.duration: true
         cdc.event.processing.duration: true
+        cdc.capture.lag.duration: true
+        cdc.consume.lag.duration: true
       slo:
         db.write.duration: 1ms,5ms,10ms,25ms,50ms,100ms,250ms,500ms,1s
         cache.read.duration: 100us,500us,1ms,5ms,10ms,25ms

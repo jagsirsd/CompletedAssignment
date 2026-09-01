@@ -28,7 +28,8 @@ Builds the app image and starts it alongside Postgres, Redis, Zookeeper, and Kaf
 docker compose up --build
 ```
 
-The API is then available at `http://localhost:8080`.
+The gRPC API is then available at `localhost:9090`; the REST API and Actuator
+(health/info/metrics) are at `http://localhost:8080`.
 
 ### Option B: App on host, dependencies in Docker
 
@@ -76,20 +77,56 @@ Actuator health and info endpoints are exposed at `/actuator/health` and `/actua
 
 ## API
 
-Base path: `/api/items`
+Item CRUD is available over **both gRPC and REST**, calling the same
+`ItemCommandService`/`ItemReadStore` layers underneath — the transport is just how a
+request arrives, not a difference in behavior or consistency guarantees.
+
+### gRPC
+
+Defined in [`src/main/proto/item.proto`](src/main/proto/item.proto), served on port
+`9090` with server reflection enabled (so tools like `grpcurl` don't need the `.proto`
+file).
+
+| RPC | Description |
+|---|---|
+| `ItemService/CreateItem` | Create an item |
+| `ItemService/GetItem` | Get an item by id, `NOT_FOUND` status if missing, served from cache when available |
+| `ItemService/ListItems` | Paginated list (`page`/`size`/`sort`, default size 20, max 100) |
+| `ItemService/DeleteItem` | Delete an item, `NOT_FOUND` status if missing |
+
+```bash
+grpcurl -plaintext -d '{"name":"widget","description":"demo"}' \
+  localhost:9090 item.v1.ItemService/CreateItem
+```
+
+### REST
+
+Base path `/api/items` on port `8080`, alongside Actuator. The embedded Tomcat connector
+has HTTP/2 cleartext (h2c) enabled (`config/Http2Config.java`) — a client that requests
+HTTP/2 gets a persistent, multiplexed connection instead of one-connection-per-request,
+matching gRPC's transport characteristics rather than plain HTTP/1.1 keep-alive.
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/items?page=0&size=20&sort=id,desc` | Paginated list (default size 20, max 100) |
 | `GET` | `/api/items/{id}` | Get an item by id, `404` if missing, served from cache when available |
-| `POST` | `/api/items` | Create an item, publishes a `CREATED` Kafka event |
-| `DELETE` | `/api/items/{id}` | Delete an item, `404` if missing, publishes a `DELETED` Kafka event |
+| `POST` | `/api/items` | Create an item |
+| `DELETE` | `/api/items/{id}` | Delete an item, `404` if missing |
 
-Item events are published to the `item-events` Kafka topic and consumed by
-`ItemEventConsumer` (with retry via `@RetryableTopic`), which refreshes the read
-side (cache and/or materialized `items_read` table, depending on `app.cqrs.read-mode`)
-asynchronously — see [DECISIONS.md](DECISIONS.md) for the consistency tradeoff this
-implies.
+Writes from either API land in PostgreSQL and are captured off its WAL by Debezium (Kafka
+Connect), published to the `mydb.public.items` Kafka topic, and consumed by
+`cdc/CdcEventConsumer.java`, which refreshes the Redis-backed read side
+(`readmodel/RedisCacheItemReadStore.java`) asynchronously — see
+[DECISIONS.md](DECISIONS.md) for the consistency tradeoff this implies.
+
+### Load testing
+
+`scripts/live-load.sh` (gRPC) and `scripts/live-load-rest.sh` (REST) each drive one
+persistent, connection-reusing client — `GrpcLoadClient`/`RestLoadClient`
+(`src/main/java/com/example/demo/loadtest/`) — instead of spawning a new client process
+per request. `db.write.duration` is tagged by `transport` (`grpc`/`rest`) so the two APIs'
+write latency can be compared directly on the Grafana dashboard's "REST vs gRPC
+Comparison" row.
 
 ## CI
 

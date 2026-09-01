@@ -29,7 +29,7 @@ public class ItemController {
 
     @PostMapping
     public Item create(@RequestBody Item item) {
-        return itemCommandService.create(item);
+        return itemCommandService.create(item, "rest");
     }
 
     @GetMapping("/{id}")
@@ -41,7 +41,7 @@ public class ItemController {
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable Long id) {
-        if (!itemCommandService.delete(id)) {
+        if (!itemCommandService.delete(id, "rest")) {
             return ResponseEntity.notFound().build();
         }
         return ResponseEntity.noContent().build();

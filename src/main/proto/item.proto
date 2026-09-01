@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package item.v1;
+
+option java_package = "com.example.demo.grpc.v1";
+option java_multiple_files = true;
+option java_outer_classname = "ItemProto";
+
+import "google/protobuf/empty.proto";
+
+service ItemService {
+  rpc CreateItem(CreateItemRequest) returns (ItemMessage);
+  rpc GetItem(GetItemRequest) returns (ItemMessage);
+  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+  rpc DeleteItem(DeleteItemRequest) returns (google.protobuf.Empty);
+}
+
+message ItemMessage {
+  int64 id = 1;
+  string name = 2;
+  string description = 3;
+}
+
+message CreateItemRequest {
+  string name = 1;
+  string description = 2;
+}
+
+message GetItemRequest {
+  int64 id = 1;
+}
+
+message DeleteItemRequest {
+  int64 id = 1;
+}
+
+message ListItemsRequest {
+  int32 page = 1;
+  int32 size = 2;
+  string sort = 3; // "field,direction", e.g. "id,desc"
+}
+
+message ListItemsResponse {
+  repeated ItemMessage content = 1;
+  int32 page = 2;
+  int32 size = 3;
+  int64 total_elements = 4;
+  int32 total_pages = 5;
+}

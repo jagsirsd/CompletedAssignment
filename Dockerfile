@@ -8,4 +8,5 @@ RUN mvn package -DskipTests
 FROM eclipse-temurin:17-jre-jammy
 VOLUME /tmp
 COPY --from=build /workspace/app/target/*.jar app.jar
+EXPOSE 8080 9090
 ENTRYPOINT ["java","-jar","/app.jar"]
