@@ -5,11 +5,13 @@
 #   100K/1T  200K/2T  300K/3T  400K/4T  500K/5T
 #   600K/6T  700K/7T  800K/7T  900K/7T  1M/7T
 #
-# Usage: ./scripts/run-live-tiers.sh
+# Usage: ./scripts/run-live-tiers.sh [live-load.sh|live-load-rest.sh]
+# Defaults to live-load.sh (gRPC); pass live-load-rest.sh for the REST/HTTP2 client.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOAD_SCRIPT="${1:-live-load.sh}"
 OVERALL_START=$(date +%s)
 
 # Format: "total_rows threads"
@@ -37,7 +39,7 @@ for STEP in "${STEPS[@]}"; do
   echo "========================================"
   TIER_START=$(date +%s)
 
-  bash "$SCRIPT_DIR/live-load.sh" "$TOTAL" "$THREADS"
+  bash "$SCRIPT_DIR/$LOAD_SCRIPT" "$TOTAL" "$THREADS"
 
   echo "Step elapsed: $(( $(date +%s) - TIER_START ))s"
   echo "Sleeping 5s for CDC to catch up..."
