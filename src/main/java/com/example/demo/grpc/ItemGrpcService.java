@@ -31,7 +31,7 @@ public class ItemGrpcService extends ItemServiceGrpc.ItemServiceImplBase {
     @Override
     public void createItem(CreateItemRequest request, StreamObserver<ItemMessage> responseObserver) {
         Item item = new Item(request.getName(), request.getDescription());
-        Item created = itemCommandService.create(item);
+        Item created = itemCommandService.create(item, "grpc");
         responseObserver.onNext(ItemGrpcMapper.toMessage(created));
         responseObserver.onCompleted();
     }
@@ -55,7 +55,7 @@ public class ItemGrpcService extends ItemServiceGrpc.ItemServiceImplBase {
 
     @Override
     public void deleteItem(DeleteItemRequest request, StreamObserver<Empty> responseObserver) {
-        if (!itemCommandService.delete(request.getId())) {
+        if (!itemCommandService.delete(request.getId(), "grpc")) {
             responseObserver.onError(notFound(request.getId()));
             return;
         }

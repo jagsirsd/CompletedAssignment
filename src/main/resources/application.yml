@@ -30,6 +30,16 @@ spring:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
 
+server:
+  tomcat:
+    threads:
+      max: ${SERVER_TOMCAT_THREADS_MAX:400}
+      min-spare: 20
+    accept-count: 200
+    max-connections: 10000
+    keep-alive-timeout: 60000
+    max-keep-alive-requests: -1
+
 grpc:
   server:
     port: ${GRPC_SERVER_PORT:9090}

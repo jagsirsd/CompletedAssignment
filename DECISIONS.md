@@ -24,14 +24,25 @@ running multiple app instances behind a load balancer, tuning the JDBC connectio
 etc. The design here (stateless app, externalized cache, event-driven read refresh) is
 what makes that deployment-level scaling *possible*, not a substitute for it.
 
-## Transport: gRPC, not REST
+## Transport: REST and gRPC, side by side
 
-The item API's transport was migrated from REST/JSON (`@RestController`) to gRPC
-(`src/main/proto/item.proto`, `grpc/ItemGrpcService.java`). This is a transport-layer
-change only — the CQRS split, `ItemCommandService`, and the Debezium CDC-driven read
-store described below are unaffected; only the controller that called them changed.
-Actuator (health/info/metrics, port 8080) stays HTTP, since it's infrastructure rather
+The item API is served over both REST (`controller/ItemController.java`, port 8080) and
+gRPC (`src/main/proto/item.proto`, `grpc/ItemGrpcService.java`, port 9090), both calling
+the same `ItemCommandService`/`ItemReadStore` — transport is purely how a request arrives,
+not a difference in behavior, consistency, or which datastore is authoritative. Actuator
+(health/info/metrics, port 8080) stays HTTP regardless, since it's infrastructure rather
 than part of the item API.
+
+REST's embedded Tomcat connector has HTTP/2 cleartext (h2c) enabled
+(`config/Http2Config.java`), so a client that requests HTTP/2 gets the same
+persistent-connection, multiplexed-stream transport characteristics gRPC has by default,
+rather than being handicapped by plain HTTP/1.1. This is what makes a fair latency/throughput
+comparison between the two possible — see "Load testing" below.
+
+`db.write.duration` (the only stage where transport can matter — everything downstream,
+CDC/Kafka/Redis, doesn't know or care which API a row came through) carries a `transport`
+tag (`grpc`/`rest`) precisely so that comparison can be made directly in Grafana instead of
+by eyeballing separate time windows.
 
 ## Pagination
 
