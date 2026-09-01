@@ -28,7 +28,8 @@ Builds the app image and starts it alongside Postgres, Redis, Zookeeper, and Kaf
 docker compose up --build
 ```
 
-The API is then available at `http://localhost:8080`.
+The gRPC API is then available at `localhost:9090`; Actuator (health/info/metrics) is at
+`http://localhost:8080`.
 
 ### Option B: App on host, dependencies in Docker
 
@@ -76,20 +77,29 @@ Actuator health and info endpoints are exposed at `/actuator/health` and `/actua
 
 ## API
 
-Base path: `/api/items`
+The item CRUD API is gRPC, defined in [`src/main/proto/item.proto`](src/main/proto/item.proto),
+served on port `9090` with server reflection enabled (so tools like `grpcurl` don't need
+the `.proto` file).
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/items?page=0&size=20&sort=id,desc` | Paginated list (default size 20, max 100) |
-| `GET` | `/api/items/{id}` | Get an item by id, `404` if missing, served from cache when available |
-| `POST` | `/api/items` | Create an item, publishes a `CREATED` Kafka event |
-| `DELETE` | `/api/items/{id}` | Delete an item, `404` if missing, publishes a `DELETED` Kafka event |
+| RPC | Description |
+|---|---|
+| `ItemService/CreateItem` | Create an item |
+| `ItemService/GetItem` | Get an item by id, `NOT_FOUND` status if missing, served from cache when available |
+| `ItemService/ListItems` | Paginated list (`page`/`size`/`sort`, default size 20, max 100) |
+| `ItemService/DeleteItem` | Delete an item, `NOT_FOUND` status if missing |
 
-Item events are published to the `item-events` Kafka topic and consumed by
-`ItemEventConsumer` (with retry via `@RetryableTopic`), which refreshes the read
-side (cache and/or materialized `items_read` table, depending on `app.cqrs.read-mode`)
-asynchronously — see [DECISIONS.md](DECISIONS.md) for the consistency tradeoff this
-implies.
+Example call:
+
+```bash
+grpcurl -plaintext -d '{"name":"widget","description":"demo"}' \
+  localhost:9090 item.v1.ItemService/CreateItem
+```
+
+Writes land in PostgreSQL and are captured off its WAL by Debezium (Kafka Connect),
+published to the `mydb.public.items` Kafka topic, and consumed by
+`cdc/CdcEventConsumer.java`, which refreshes the Redis-backed read side
+(`readmodel/RedisCacheItemReadStore.java`) asynchronously — see
+[DECISIONS.md](DECISIONS.md) for the consistency tradeoff this implies.
 
 ## CI
 

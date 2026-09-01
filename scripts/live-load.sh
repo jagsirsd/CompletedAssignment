@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Concurrent API live load — spawns <threads> background processes each
-# firing curl POSTs to POST /api/items, exercising the full CDC round-trip:
+# firing grpcurl CreateItem calls, exercising the full CDC round-trip:
 #   Spring Boot → PostgreSQL WAL → Debezium → Kafka → CdcEventConsumer → Redis
 #
 # Usage:   ./scripts/live-load.sh <total_rows> <threads>
@@ -10,7 +10,8 @@ set -euo pipefail
 
 TOTAL=${1:?Usage: live-load.sh <total_rows> <threads>}
 THREADS=${2:-1}
-APP_URL=${APP_URL:-http://localhost:8080}
+APP_HOST=${APP_HOST:-localhost}
+GRPC_PORT=${GRPC_PORT:-9090}
 
 PER_THREAD=$(( TOTAL / THREADS ))
 REMAINDER=$(( TOTAL - PER_THREAD * THREADS ))
@@ -25,10 +26,8 @@ run_thread() {
   local fail=0
 
   for i in $(seq 1 "$count"); do
-    HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$APP_URL/api/items" \
-      -H "Content-Type: application/json" \
-      -d "{\"name\":\"live-t${t}-${i}-${RANDOM}\",\"description\":\"desc-t${t}-${i}-${RANDOM}\"}")
-    if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+    if grpcurl -plaintext -d "{\"name\":\"live-t${t}-${i}-${RANDOM}\",\"description\":\"desc-t${t}-${i}-${RANDOM}\"}" \
+        "${APP_HOST}:${GRPC_PORT}" item.v1.ItemService/CreateItem >/dev/null 2>&1; then
       ok=$(( ok + 1 ))
     else
       fail=$(( fail + 1 ))

@@ -24,6 +24,15 @@ running multiple app instances behind a load balancer, tuning the JDBC connectio
 etc. The design here (stateless app, externalized cache, event-driven read refresh) is
 what makes that deployment-level scaling *possible*, not a substitute for it.
 
+## Transport: gRPC, not REST
+
+The item API's transport was migrated from REST/JSON (`@RestController`) to gRPC
+(`src/main/proto/item.proto`, `grpc/ItemGrpcService.java`). This is a transport-layer
+change only — the CQRS split, `ItemCommandService`, and the Debezium CDC-driven read
+store described below are unaffected; only the controller that called them changed.
+Actuator (health/info/metrics, port 8080) stays HTTP, since it's infrastructure rather
+than part of the item API.
+
 ## Pagination
 
 `GET /api/items?page=0&size=20&sort=id,desc` — Spring Data `Pageable`, default page size

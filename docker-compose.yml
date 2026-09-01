@@ -5,6 +5,7 @@ services:
     build: .
     ports:
       - "8080:8080"
+      - "9090:9090"
     depends_on:
       db:
         condition: service_healthy
@@ -105,7 +106,9 @@ services:
   prometheus:
     image: prom/prometheus:v2.51.0
     ports:
-      - "9090:9090"
+      # Host 9091 -> container 9090: host 9090 is reserved for the app's gRPC port.
+      # Grafana reaches Prometheus over the internal docker network, unaffected.
+      - "9091:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     command:

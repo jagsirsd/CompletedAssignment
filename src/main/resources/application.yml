@@ -30,6 +30,11 @@ spring:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
 
+grpc:
+  server:
+    port: ${GRPC_SERVER_PORT:9090}
+    reflection-service-enabled: true
+
 management:
   endpoints:
     web:
