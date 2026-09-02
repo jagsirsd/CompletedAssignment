@@ -74,27 +74,54 @@ a Hibernate-proxied `Item` doesn't serialize/deserialize reliably.
 Writes and reads go through separate components:
 
 - **Command** (`service/ItemCommandService.java`) — `create`/`delete` write to the
-  `items` table (source of truth) and publish a `CREATED`/`DELETED` event to the
-  `item-events` Kafka topic (`kafka/ItemEventProducer.java`). It never touches a cache
-  or read model directly, so write latency doesn't depend on how much read
-  infrastructure exists behind it.
-- **Query** (`readmodel/ItemReadStore.java`) — serves all `GET` traffic. `kafka/ItemEventConsumer.java`
-  (which previously just logged) now parses each event and calls
-  `onItemCreated`/`onItemDeleted` on the read store, refreshing it **asynchronously**,
-  off the request path entirely.
+  `items` table (source of truth). PostgreSQL's WAL is captured by Debezium (Kafka
+  Connect) and published to the `mydb.public.items` Kafka topic — the command path
+  doesn't publish anything itself; the database's own commit is what drives the event.
+- **Query** (`readmodel/ItemReadStore.java` / `RedisCacheItemReadStore.java`) — serves all
+  reads from Redis. `cdc/CdcEventConsumer.java` consumes the Debezium topic and calls
+  `onItemCreated`/`onItemUpdated`/`onItemDeleted`, refreshing the cache **asynchronously**,
+  off the request path.
 
-`app.cqrs.read-mode` picks how deep that separation goes:
+**Consistency tradeoff**: because the read side refreshes from CDC asynchronously,
+there's a window after a write where a read can still miss or return stale state until the
+consumer processes the corresponding event. Under normal load this is milliseconds; under
+backlog (e.g. a large bulk load competing for the same WAL/Kafka pipeline) it can be much
+longer — this repo's own telemetry (`cdc.capture.lag.duration`, `cdc.consume.lag.duration`)
+measured minutes of lag during a 50M-row bulk seed. This is deliberate — it's what keeps
+the write path's latency independent of how much read infrastructure exists behind it —
+but it is not appropriate for use cases needing strict read-your-writes consistency.
 
-| `app.cqrs.read-mode` | Implementation | What it reads from |
-|---|---|---|
-| `cache` (default) | `readmodel/CacheBackedItemReadStore.java` | The same `items` table the write path uses, fronted by the cache above (refreshed by events, not invalidated synchronously on write). |
-| `materialized-table` | `readmodel/MaterializedItemReadStore.java` | A separate `items_read` table (`readmodel/ItemReadModel.java`), populated only by the Kafka consumer — never written to directly by the command path. Still cached in front (the two settings compose). Closer to physically separate read/write stores; more moving parts (extra table, consumer does a DB write per event) in exchange for a read path that could later move to its own datastore without touching the write path at all. |
+### Write-behind: in-memory buffer, batched async flush to Postgres
 
-**Consistency tradeoff**: because the read side refreshes from Kafka asynchronously,
-there's a brief window after a write where a read can still return the old state (e.g. a
-just-deleted item still appearing in a cached list page) until the consumer processes the
-event. This is deliberate — it's what keeps writes fast — and is standard for CQRS. It is
-not appropriate for use cases needing strict read-your-writes consistency.
+This branch replaces the command path's per-request `INSERT` with
+`service/WriteBehindBuffer.java`: `create` assigns an id
+(`service/SnowflakeIdGenerator.java` — app-generated, since a DB-`IDENTITY` id doesn't
+exist until the row is actually inserted), enqueues the item in memory, updates Redis
+directly from that same layer, and returns — Postgres is not on the request's critical
+path at all. A `@Scheduled` task (every 25ms) drains whatever has queued up and executes
+one batched `INSERT` (`JdbcTemplate.batchUpdate`, `OVERRIDING SYSTEM VALUE` to supply the
+app-generated id into the identity column) instead of one commit per row.
+
+**Why**: this session's own bulk-seed script proved batching is the real throughput lever
+— ~72K rows/sec batched vs. ~2K rows/sec one-row-per-request (measured via the gRPC/REST
+load clients earlier in this session). Coalescing many concurrent requests' rows into one
+INSERT amortizes the commit/WAL-flush cost across all of them instead of paying it per row.
+
+**The tradeoff, stated plainly**: a write is acknowledged to the client (and visible in
+Redis) *before* it is durably in PostgreSQL. If the process crashes with rows still in the
+in-memory queue, those rows are gone — not delayed, not recoverable, gone. This is not a
+free performance win; it's an explicit choice to accept a bounded window (currently up to
+~25ms, one flush cycle) of "acknowledged but not yet durable" in exchange for
+throughput/latency. That is a legitimate, common pattern for high-volume ingestion
+pipelines where an individual row's loss on a rare crash is acceptable — it is **not**
+appropriate for anything where a success response must mean "durably stored" (financial
+transactions, anything audited). CDC continues to run against whatever actually lands in
+Postgres, so once a batch flushes, that portion of the data reconciles into Redis exactly
+as before — the tradeoff is scoped to the pre-flush window, not the whole system's
+consistency model.
+
+`delete` is unchanged from the synchronous write-through variant — deletes aren't the
+throughput bottleneck this strategy targets.
 
 ## Configuration reference
 

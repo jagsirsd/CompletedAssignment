@@ -67,6 +67,10 @@ management:
         cdc.event.processing.duration: true
         cdc.capture.lag.duration: true
         cdc.consume.lag.duration: true
+        cdc.total.lag.duration: true
+        fastpath.cache.write.duration: true
+        item.command.total.duration: true
+        writebehind.batch.flush.duration: true
       slo:
         db.write.duration: 1ms,5ms,10ms,25ms,50ms,100ms,250ms,500ms,1s
         cache.read.duration: 100us,500us,1ms,5ms,10ms,25ms
