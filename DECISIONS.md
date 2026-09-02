@@ -74,27 +74,39 @@ a Hibernate-proxied `Item` doesn't serialize/deserialize reliably.
 Writes and reads go through separate components:
 
 - **Command** (`service/ItemCommandService.java`) — `create`/`delete` write to the
-  `items` table (source of truth) and publish a `CREATED`/`DELETED` event to the
-  `item-events` Kafka topic (`kafka/ItemEventProducer.java`). It never touches a cache
-  or read model directly, so write latency doesn't depend on how much read
-  infrastructure exists behind it.
-- **Query** (`readmodel/ItemReadStore.java`) — serves all `GET` traffic. `kafka/ItemEventConsumer.java`
-  (which previously just logged) now parses each event and calls
-  `onItemCreated`/`onItemDeleted` on the read store, refreshing it **asynchronously**,
-  off the request path entirely.
+  `items` table (source of truth). PostgreSQL's WAL is captured by Debezium (Kafka
+  Connect) and published to the `mydb.public.items` Kafka topic — the command path
+  doesn't publish anything itself; the database's own commit is what drives the event.
+- **Query** (`readmodel/ItemReadStore.java` / `RedisCacheItemReadStore.java`) — serves all
+  reads from Redis. `cdc/CdcEventConsumer.java` consumes the Debezium topic and calls
+  `onItemCreated`/`onItemUpdated`/`onItemDeleted`, refreshing the cache **asynchronously**,
+  off the request path.
 
-`app.cqrs.read-mode` picks how deep that separation goes:
+**Consistency tradeoff**: because the read side refreshes from CDC asynchronously,
+there's a window after a write where a read can still miss or return stale state until the
+consumer processes the corresponding event. Under normal load this is milliseconds; under
+backlog (e.g. a large bulk load competing for the same WAL/Kafka pipeline) it can be much
+longer — this repo's own telemetry (`cdc.capture.lag.duration`, `cdc.consume.lag.duration`)
+measured minutes of lag during a 50M-row bulk seed. This is deliberate — it's what keeps
+the write path's latency independent of how much read infrastructure exists behind it —
+but it is not appropriate for use cases needing strict read-your-writes consistency.
 
-| `app.cqrs.read-mode` | Implementation | What it reads from |
-|---|---|---|
-| `cache` (default) | `readmodel/CacheBackedItemReadStore.java` | The same `items` table the write path uses, fronted by the cache above (refreshed by events, not invalidated synchronously on write). |
-| `materialized-table` | `readmodel/MaterializedItemReadStore.java` | A separate `items_read` table (`readmodel/ItemReadModel.java`), populated only by the Kafka consumer — never written to directly by the command path. Still cached in front (the two settings compose). Closer to physically separate read/write stores; more moving parts (extra table, consumer does a DB write per event) in exchange for a read path that could later move to its own datastore without touching the write path at all. |
+### Fast path: synchronous read-model write alongside CDC
 
-**Consistency tradeoff**: because the read side refreshes from Kafka asynchronously,
-there's a brief window after a write where a read can still return the old state (e.g. a
-just-deleted item still appearing in a cached list page) until the consumer processes the
-event. This is deliberate — it's what keeps writes fast — and is standard for CQRS. It is
-not appropriate for use cases needing strict read-your-writes consistency.
+`ItemCommandService` also pushes each write directly into the Redis read model
+(`fastpath.cache.write.duration`), synchronously, in addition to the CDC path above —
+added specifically because the CDC-only lag measured above means a client that creates an
+item and immediately reads it back can see a cache miss for anywhere from milliseconds to
+minutes. This trades a small, bounded amount of write-path latency (one extra Redis round
+trip normally well under a millisecond) for read-your-writes consistency in the common
+case, while CDC keeps running unchanged as the durable, replayable reconciliation source —
+both paths write identical derived state, so CDC's later (redundant) write is harmless.
+The fast-path write is best-effort: a Redis failure is caught and logged, never propagated
+to the client, since CDC remains the backstop that will eventually populate the cache
+regardless. This reintroduces a dependency from the command side onto the read model that
+the original CQRS write-up above deliberately avoided — accepted here because the
+observed latency cost of *not* having it (a multi-minute window during backlog) outweighs
+the coupling cost for this workload.
 
 ## Configuration reference
 

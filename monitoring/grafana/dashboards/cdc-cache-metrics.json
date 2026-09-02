@@ -540,6 +540,58 @@
       ],
       "title": "Write Throughput: REST vs gRPC (req/s)",
       "type": "timeseries"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 58 },
+      "id": 105,
+      "title": "Data-Push Latency: CDC Path vs Fast Path",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Time from DB commit to fully visible-in-Redis. cdc.total.lag.duration = via CDC/Kafka only. item.command.total.duration = the synchronous fast path (DB write + direct Redis write), which also runs CDC in parallel as a backstop.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "scaleDistribution": { "type": "log", "log": 10 } },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 59 },
+      "id": 15,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(cdc_total_lag_duration_seconds_bucket{operation=\"create\"}[1m])) by (le))",
+          "legendFormat": "CDC path p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(cdc_total_lag_duration_seconds_bucket{operation=\"create\"}[1m])) by (le))",
+          "legendFormat": "CDC path p95",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(item_command_total_duration_seconds_bucket{operation=\"create\"}[1m])) by (le))",
+          "legendFormat": "Fast path p50",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(item_command_total_duration_seconds_bucket{operation=\"create\"}[1m])) by (le))",
+          "legendFormat": "Fast path p95",
+          "refId": "D"
+        }
+      ],
+      "title": "Time to Visible-in-Redis: CDC Path vs Fast Path (log scale)",
+      "type": "timeseries"
     }
   ]
 }
