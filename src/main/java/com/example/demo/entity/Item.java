@@ -1,18 +1,20 @@
 package com.example.demo.entity;
 
-import jakarta.persistence.*;
+import org.springframework.data.cassandra.core.mapping.PrimaryKey;
+import org.springframework.data.cassandra.core.mapping.Table;
 
-@Entity
-@Table(name = "items")
+/**
+ * Cassandra/Scylla has no auto-increment concept — every write supplies its own primary
+ * key, so {@code id} is always app-generated (see {@link com.example.demo.service.SnowflakeIdGenerator}),
+ * never left null for the datastore to fill in.
+ */
+@Table("items")
 public class Item {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @PrimaryKey
     private Long id;
 
-    @Column(nullable = false)
     private String name;
-
     private String description;
 
     public Item() {}
@@ -23,6 +25,7 @@ public class Item {
     }
 
     public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
     public String getDescription() { return description; }

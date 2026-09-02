@@ -2,28 +2,13 @@ spring:
   application:
     name: demo
 
-  datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/mydb}
-    username: ${SPRING_DATASOURCE_USERNAME:user}
-    password: ${SPRING_DATASOURCE_PASSWORD:password}
-    driver-class-name: org.postgresql.Driver
-
-  jpa:
-    hibernate:
-      ddl-auto: update
-    show-sql: false
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
-
-  kafka:
-    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    consumer:
-      group-id: cdc-consumer-group
-      auto-offset-reset: earliest
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      enable-auto-commit: false
+  cassandra:
+    contact-points: ${SPRING_CASSANDRA_CONTACT_POINTS:localhost}
+    port: ${SPRING_CASSANDRA_PORT:9042}
+    local-datacenter: ${SPRING_CASSANDRA_LOCAL_DATACENTER:datacenter1}
+    keyspace-name: ${SPRING_CASSANDRA_KEYSPACE_NAME:demo}
+    # Table is created by docker-compose's scylla-init service; nothing to manage here.
+    schema-action: none
 
   data:
     redis:
@@ -64,9 +49,8 @@ management:
         db.delete.duration: true
         cache.read.duration: true
         cache.write.duration: true
-        cdc.event.processing.duration: true
-        cdc.capture.lag.duration: true
-        cdc.consume.lag.duration: true
+        fastpath.cache.write.duration: true
+        item.command.total.duration: true
       slo:
         db.write.duration: 1ms,5ms,10ms,25ms,50ms,100ms,250ms,500ms,1s
         cache.read.duration: 100us,500us,1ms,5ms,10ms,25ms
@@ -74,10 +58,6 @@ management:
 app:
   cache:
     items-ttl-seconds: 300
-  debezium:
-    kafka-connect-url: ${APP_DEBEZIUM_KAFKACONNECTURL:http://localhost:8083}
-    topic: ${APP_DEBEZIUM_TOPIC:mydb.public.items}
-    db-hostname: ${APP_DEBEZIUM_DBHOSTNAME:}
   metrics:
     # How often (ms) the scheduled gauge collector samples DB row count + Redis key count
     collection-interval-ms: ${APP_METRICS_INTERVAL_MS:5000}
